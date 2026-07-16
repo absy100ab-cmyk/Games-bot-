@@ -1,12 +1,8 @@
 import os
 import sys
 import logging
-import asyncio
-from pathlib import Path
-from typing import Dict, Optional, Tuple
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, InputMediaVideo, InputMediaDocument
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
-from telegram.error import TelegramError
 
 # ===================== إعداد التسجيل =====================
 logging.basicConfig(
@@ -22,67 +18,62 @@ if not TOKEN:
     logger.info("💡 استخدم: export BOT_TOKEN='your_token_here'")
     sys.exit(1)
 
-# ===================== إعدادات التخزين المؤقت والملفات =====================
-MEDIA_DIR = Path("media")  # دليل تخزين الملفات
-MEDIA_DIR.mkdir(exist_ok=True)
-FILE_ID_CACHE: Dict[str, Dict[str, str]] = {}  # تخزين مؤقت لمعرّفات الملفات
-
 # ===================== قاعدة البيانات =====================
 MOVIE_DB = {
     "avatar": {
         "type": "movie",
         "parts": 2,
-        "files": [
-            "media/avatar-part1.mp4",
-            "media/avatar-part2.mp4"
+        "content": [
+            "Avatar Part 1 - Content",
+            "Avatar Part 2 - Content"
         ],
         "description": "فيلم Avatar - الجزء الأول والثاني"
     },
     "game of thrones": {
         "type": "series",
         "episodes": 8,
-        "files": [
-            "media/got-s1e1.mkv",
-            "media/got-s1e2.mkv",
-            "media/got-s1e3.mkv",
-            "media/got-s1e4.mkv",
-            "media/got-s1e5.mkv",
-            "media/got-s1e6.mkv",
-            "media/got-s1e7.mkv",
-            "media/got-s1e8.mkv"
+        "content": [
+            "Game of Thrones S01E01 - Winter is Coming",
+            "Game of Thrones S01E02 - The Kingsroad",
+            "Game of Thrones S01E03 - Lord Snow",
+            "Game of Thrones S01E04 - Cripples, Bastards, and Broken Things",
+            "Game of Thrones S01E05 - The Wolf and the Lion",
+            "Game of Thrones S01E06 - A Golden Crown",
+            "Game of Thrones S01E07 - You Win or You Die",
+            "Game of Thrones S01E08 - The Pointy End"
         ],
         "description": "مسلسل Game of Thrones - الموسم الأول"
     },
     "the witcher": {
         "type": "series",
         "episodes": 3,
-        "files": [
-            "media/witcher-s1.mkv",
-            "media/witcher-s2.mkv",
-            "media/witcher-s3.mkv"
+        "content": [
+            "The Witcher Season 1",
+            "The Witcher Season 2",
+            "The Witcher Season 3"
         ],
         "description": "مسلسل The Witcher"
     },
     "the godfather": {
         "type": "movie",
         "parts": 3,
-        "files": [
-            "media/godfather-1.mkv",
-            "media/godfather-2.mkv",
-            "media/godfather-3.mkv"
+        "content": [
+            "The Godfather Part 1",
+            "The Godfather Part 2",
+            "The Godfather Part 3"
         ],
         "description": "فيلم The Godfather - جميع الأجزاء"
     },
     "inception": {
         "type": "movie",
         "parts": 1,
-        "files": ["media/inception.mkv"],
+        "content": ["Inception - Full Movie"],
         "description": "فيلم Inception"
     }
 }
 
 # ===================== دوال المساعدة =====================
-def get_movie_info(name: str) -> Optional[dict]:
+def get_movie_info(name: str):
     """البحث عن الفيلم/المسلسل بناءً على الاسم"""
     if not name:
         return None
@@ -90,20 +81,13 @@ def get_movie_info(name: str) -> Optional[dict]:
     return MOVIE_DB.get(name_lower, None)
 
 
-def get_all_titles() -> list:
+def get_all_titles():
     """الحصول على جميع العناوين المتاحة"""
     return list(MOVIE_DB.keys())
 
 
-def parse_callback_data(data: str) -> Optional[dict]:
-    """
-    تحليل بيانات رد الاتصال بشكل آمن
-    الصيغ المتوقعة:
-    - "help" → {'action': 'help'}
-    - "watch:avatar" → {'action': 'watch', 'movie': 'avatar'}
-    - "ep:game of thrones:3" → {'action': 'ep', 'movie': 'game of thrones', 'number': 3}
-    - "part:the godfather:2" → {'action': 'part', 'movie': 'the godfather', 'number': 2}
-    """
+def parse_callback_data(data: str):
+    """تحليل بيانات رد الاتصال بشكل آمن"""
     try:
         if data == "help":
             return {'action': 'help'}
@@ -136,11 +120,6 @@ def parse_callback_data(data: str) -> Optional[dict]:
     except Exception as e:
         logger.error(f"خطأ في تحليل البيانات: {e}")
         return None
-
-
-def file_exists(file_path: str) -> bool:
-    """التحقق من وجود الملف"""
-    return Path(file_path).exists() and Path(file_path).is_file()
 
 
 def build_buttons(movie_name: str, movie_data: dict) -> InlineKeyboardMarkup:
@@ -195,7 +174,7 @@ def build_buttons(movie_name: str, movie_data: dict) -> InlineKeyboardMarkup:
 
 
 # ===================== معالجات البوت =====================
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def start(update: Update, context) -> None:
     """رسالة الترحيب الرئيسية"""
     try:
         welcome_msg = (
@@ -203,7 +182,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "📌 *كيفية الاستخدام:*\n"
             "• أرسل اسم فيلم أو مسلسل للبحث عنه\n"
             "• اختر الحلقة أو الجزء من الأزرار\n"
-            "• سيتم إرسال الملف مباشرة لك\\!\n\n"
+            "• سيتم إرسال المحتوى مباشرة لك\\!\n\n"
             "📺 *الأفلام والمسلسلات المتاحة:*\n"
         )
 
@@ -216,23 +195,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
         welcome_msg += "\n\n💡 *جرب إرسال:* `Avatar`"
 
-        await update.message.reply_text(
-            welcome_msg,
-            parse_mode='MarkdownV2'
-        )
+        await update.message.reply_text(welcome_msg, parse_mode='MarkdownV2')
     except Exception as e:
         logger.error(f"خطأ في أمر start: {e}")
         await update.message.reply_text("❌ حدث خطأ في معالجة الطلب.")
 
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def help_command(update: Update, context) -> None:
     """أمر المساعدة"""
     try:
         help_msg = (
             "🆘 *كيفية استخدام البوت:*\n\n"
             "1️⃣ أرسل اسم فيلم أو مسلسل\n"
             "2️⃣ اختر الحلقة أو الجزء من الأزرار\n"
-            "3️⃣ سيتم تحميل الملف مباشرة\\!\n\n"
+            "3️⃣ سيتم إرسال المحتوى مباشرة\\!\n\n"
             "📌 *الأوامر المتاحة:*\n"
             "/start \\- عرض رسالة الترحيب\n"
             "/help \\- عرض هذه المساعدة\n"
@@ -245,7 +221,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await update.message.reply_text("❌ حدث خطأ في معالجة الطلب.")
 
 
-async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def list_command(update: Update, context) -> None:
     """عرض جميع العناوين المتاحة"""
     try:
         titles = get_all_titles()
@@ -265,7 +241,7 @@ async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await update.message.reply_text("❌ حدث خطأ في معالجة الطلب.")
 
 
-async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def search_command(update: Update, context) -> None:
     """البحث عن فيلم/مسلسل باستخدام الأمر"""
     try:
         if not context.args:
@@ -300,7 +276,7 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text("❌ حدث خطأ في معالجة الطلب.")
 
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def handle_message(update: Update, context) -> None:
     """معالجة الرسائل النصية"""
     try:
         user_text = update.message.text.strip()
@@ -348,84 +324,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text("❌ حدث خطأ أثناء معالجة رسالتك.")
 
 
-async def send_file_with_retry(
-    query,
-    file_path: str,
-    chat_id: int,
-    caption: str,
-    file_type: str = "video"
-) -> bool:
-    """
-    إرسال ملف مع إعادة محاولة في حالة الفشل
-    يدعم الملفات الكبيرة والقائمة المرسلة
-    """
-    try:
-        if not file_exists(file_path):
-            logger.warning(f"⚠️ الملف غير موجود: {file_path}")
-            await query.edit_message_text(
-                f"❌ عذراً، الملف غير متاح حالياً.\n\n"
-                f"يرجى المحاولة لاحقاً."
-            )
-            return False
-
-        # إرسال رسالة التحميل
-        await query.edit_message_text(
-            "⏳ جاري تحميل الملف... يرجى الانتظار"
-        )
-
-        # إرسال الملف بناءً على النوع
-        with open(file_path, 'rb') as file:
-            if file_type == "video":
-                await query.bot.send_video(
-                    chat_id=chat_id,
-                    video=file,
-                    caption=caption,
-                    parse_mode='Markdown'
-                )
-            elif file_type == "document":
-                await query.bot.send_document(
-                    chat_id=chat_id,
-                    document=file,
-                    caption=caption,
-                    parse_mode='Markdown'
-                )
-            elif file_type == "photo":
-                await query.bot.send_photo(
-                    chat_id=chat_id,
-                    photo=file,
-                    caption=caption,
-                    parse_mode='Markdown'
-                )
-
-        await query.edit_message_text(
-            "✅ تم تحميل الملف بنجاح\\!\n\n"
-            "💡 استخدم /help للمساعدة\\."
-        )
-        logger.info(f"✅ تم إرسال الملف: {file_path}")
-        return True
-
-    except TelegramError as e:
-        logger.error(f"❌ خطأ في إرسال الملف عبر Telegram: {e}")
-        try:
-            await query.edit_message_text(
-                "❌ حدث خطأ أثناء إرسال الملف\\. يرجى المحاولة لاحقاً\\."
-            )
-        except:
-            pass
-        return False
-    except Exception as e:
-        logger.error(f"❌ خطأ غير متوقع في إرسال الملف: {e}")
-        try:
-            await query.edit_message_text(
-                "❌ حدث خطأ غير متوقع\\. يرجى المحاولة لاحقاً\\."
-            )
-        except:
-            pass
-        return False
-
-
-async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """معالجة ضغط الأزرار - محسّنة وآمنة مع إرسال الملفات"""
+async def button_callback(update: Update, context) -> None:
+    """معالجة ضغط الأزرار - إرسال المحتوى المباشر"""
     try:
         query = update.callback_query
         await query.answer()
@@ -444,7 +344,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 "• أرسل اسم فيلم أو مسلسل للبحث\n"
                 "• استخدم /list لعرض جميع العناوين\n"
                 "• استخدم /search \\[اسم\\] للبحث المباشر\n\n"
-                "💡 سيتم إرسال الملفات مباشرة لك عند اختيار حلقة أو جزء\\."
+                "💡 سيتم إرسال المحتوى مباشرة لك عند اختيار حلقة أو جزء\\."
             )
             await query.edit_message_text(help_msg, parse_mode='MarkdownV2')
             return
@@ -457,30 +357,45 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             return
 
         if action == "watch":
-            if movie_data.get('files'):
-                file_path = movie_data['files'][0]
-                caption = f"🎬 *{movie_name.title()}*\n\n{movie_data.get('description', '')}"
-                await send_file_with_retry(query, file_path, update.effective_chat.id, caption, "video")
+            # فيلم واحد
+            if movie_data.get('content'):
+                content = movie_data['content'][0]
+                await query.edit_message_text(
+                    f"🎬 *{movie_name.title()}*\n\n"
+                    f"📥 *المحتوى:*\n`{content}`\n\n"
+                    f"✅ تم إرسال المحتوى بنجاح\\!",
+                    parse_mode='MarkdownV2'
+                )
             else:
-                await query.edit_message_text("❌ عذراً، لا يوجد ملف لهذا الفيلم.")
+                await query.edit_message_text("❌ عذراً، لا يوجد محتوى لهذا الفيلم.")
 
         elif action == "ep":
+            # حلقة من مسلسل
             episode_num = parsed_data.get('number')
-            if episode_num and episode_num <= len(movie_data.get('files', [])):
-                file_path = movie_data['files'][episode_num - 1]
-                caption = f"📺 *{movie_name.title()}* \\- حلقة {episode_num}\n\n{movie_data.get('description', '')}"
-                await send_file_with_retry(query, file_path, update.effective_chat.id, caption, "video")
+            if episode_num and episode_num <= len(movie_data.get('content', [])):
+                content = movie_data['content'][episode_num - 1]
+                await query.edit_message_text(
+                    f"📺 *{movie_name.title()}* \\- حلقة {episode_num}\n\n"
+                    f"📥 *المحتوى:*\n`{content}`\n\n"
+                    f"✅ تم إرسال الحلقة بنجاح\\!",
+                    parse_mode='MarkdownV2'
+                )
             else:
-                await query.edit_message_text(f"❌ عذراً، لا يوجد ملف للحلقة {episode_num}.")
+                await query.edit_message_text(f"❌ عذراً، لا يوجد محتوى للحلقة {episode_num}.")
 
         elif action == "part":
+            # جزء من فيلم
             part_num = parsed_data.get('number')
-            if part_num and part_num <= len(movie_data.get('files', [])):
-                file_path = movie_data['files'][part_num - 1]
-                caption = f"🎬 *{movie_name.title()}* \\- جزء {part_num}\n\n{movie_data.get('description', '')}"
-                await send_file_with_retry(query, file_path, update.effective_chat.id, caption, "video")
+            if part_num and part_num <= len(movie_data.get('content', [])):
+                content = movie_data['content'][part_num - 1]
+                await query.edit_message_text(
+                    f"🎬 *{movie_name.title()}* \\- جزء {part_num}\n\n"
+                    f"📥 *المحتوى:*\n`{content}`\n\n"
+                    f"✅ تم إرسال الجزء بنجاح\\!",
+                    parse_mode='MarkdownV2'
+                )
             else:
-                await query.edit_message_text(f"❌ عذراً، لا يوجد ملف للجزء {part_num}.")
+                await query.edit_message_text(f"❌ عذراً، لا يوجد محتوى للجزء {part_num}.")
 
         else:
             await query.edit_message_text("❌ إجراء غير معروف.")
@@ -493,7 +408,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             logger.error("فشل إرسال رسالة الخطأ")
 
 
-async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def error_handler(update: Update, context) -> None:
     """معالج الأخطاء العام"""
     logger.error(f"تحديث: {update}")
     logger.error(f"حدث خطأ: {context.error}")
@@ -516,7 +431,7 @@ def main() -> None:
         logger.info(f"✅ Token موجود: {bool(TOKEN)}")
         logger.info(f"📚 عدد العناوين في قاعدة البيانات: {len(MOVIE_DB)}")
 
-        # إنشاء التطبيق مع إعدادات محسّنة
+        # إنشاء التطبيق
         application = (
             Application.builder()
             .token(TOKEN)
