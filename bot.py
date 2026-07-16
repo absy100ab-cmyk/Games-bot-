@@ -523,7 +523,6 @@ def main() -> None:
             .connect_timeout(30)
             .read_timeout(30)
             .write_timeout(30)
-            .pool_size(32)
             .build()
         )
 
