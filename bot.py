@@ -23,52 +23,79 @@ if not TOKEN:
     logger.info("💡 استخدم: export BOT_TOKEN='your_token_here'")
     sys.exit(1)
 
-# الرأس الافتراضي لتجنب حظر السكرابينج من المواقع
+# رأس متطور يحاكي متصفح حقيقي بالكامل لتجاوز الحجب
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+    "Accept-Language": "ar,en-US;q=0.7,en;q=0.3",
+    "Referer": "https://google.com"
 }
 
-# ===================== دالة البحث المطورة والسريعة =====================
+# ===================== دالة البحث المطورة والبديلة =====================
 def search_movies_online(query: str) -> list:
     """
-    البحث السريع والمستقر في محرك بحث سينمائي بديل يضمن جلب العناوين والروابط
+    البحث السريع والمستقر في محركات بحث مرنة لا تحظر السيرفرات السحابية
     """
     results = []
-    try:
-        # استخدام صيغة بحث في موقع موثوق ومستقر مثل عائلة Cima (وي سيما البديل أو لودي نت)
-        encoded_query = urllib.parse.quote(query)
-        # نستخدم رابط محرك بحث مرن ومستقر 
-        search_url = f"https://wecima.show/search/{encoded_query}"
-        
-        response = requests.get(search_url, headers=HEADERS, timeout=8)
-        if response.status_code != 200:
-            # محاولة بديلة في حال تعطل السيرفر الأول
-            search_url = f"https://mycima.tube/search/{encoded_query}"
-            response = requests.get(search_url, headers=HEADERS, timeout=8)
-
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.text, 'html.parser')
-            
-            # البحث عن الروابط والعناوين داخل الهيكل العام للموقع
-            # يبحث عن تصنيفات الأفلام (Grid Class)
-            items = soup.find_all('a', href=True)
-            for item in items:
-                title = item.get('title') or item.text.strip()
-                link = item['href']
-                
-                # التحقق من أن العنصر هو فيلم أو مسلسل وليس رابطاً جانبياً
-                if title and len(title) > 3 and ('watch' in link or '/post/' in link or '/video/' in link or 'film' in link or 'series' in link):
-                    # تجنب تكرار نفس العنوان في القائمة
-                    if not any(r['title'] == title for r in results):
-                        results.append({
-                            'title': title,
-                            'link': link
-                        })
-                        if len(results) >= 6:  # نكتفي بأول 6 نتائج لسرعة الاستجابة
-                            break
-    except Exception as e:
-        logger.error(f"خطأ أثناء البحث السينمائي: {e}")
+    encoded_query = urllib.parse.quote(query)
     
+    # قائمة بمواقع سينمائية بديلة وسهلة القراءة (Scraping) وبدون حماية Cloudflare معقدة
+    sources = [
+        {
+            "url": f"https://cimalight.io/search/{encoded_query}",
+            "selector": "a",
+            "check": "watch"
+        },
+        {
+            "url": f"https://mycima.fun/search/{encoded_query}",
+            "selector": "a",
+            "check": "post"
+        }
+    ]
+
+    for source in sources:
+        try:
+            response = requests.get(source["url"], headers=HEADERS, timeout=7)
+            if response.status_code == 200:
+                soup = BeautifulSoup(response.text, 'html.parser')
+                items = soup.find_all(source["selector"], href=True)
+                
+                for item in items:
+                    title = item.get('title') or item.text.strip()
+                    link = item['href']
+                    
+                    # فلترة الروابط للتأكد من أنها أفلام أو مسلسلات وليست روابط داخلية
+                    if title and len(title) > 4 and any(x in link for x in [source["check"], 'video', 'film', 'series']):
+                        if not any(r['title'] == title for r in results):
+                            results.append({
+                                'title': title,
+                                'link': link
+                            })
+                            if len(results) >= 6:
+                                break
+            if results:
+                break # إذا وجدنا نتائج في الموقع الأول لا داعي لفحص البقية تسريعاً للوقت
+        except Exception as e:
+            logger.error(f"فشل البحث في مصدر {source['url']}: {e}")
+            continue
+
+    # --- حل احتياطي ذكي (Fallback) في حال كانت كل المواقع تحظر السيرفر ---
+    if not results:
+        # نقوم بإنشاء روابط بحث جاهزة ومباشرة للمستخدم ليدخل عليها بضغطة زر كخيار بديل مضمون
+        safe_query = urllib.parse.quote(query)
+        results.append({
+            'title': f"🔍 ابحث عن '{query}' مباشرة على Google",
+            'link': f"https://www.google.com/search?q=مشاهدة+فيلم+{safe_query}"
+        })
+        results.append({
+            'title': f"🎬 ابحث في موقع وي سيما البديل",
+            'link': f"https://wecima.show/search/{safe_query}"
+        })
+        results.append({
+            'title': f"🍿 ابحث في موقع أكوام",
+            'link': f"https://ak.sv/search?q={safe_query}"
+        })
+
     return results
 
 # ===================== دالة جلب الروابط المباشرة السريعة =====================
@@ -77,24 +104,26 @@ def extract_stream_links(movie_url: str) -> list:
     استخراج روابط التحميل أو المشاهدة المباشرة من صفحة الفيلم
     """
     links = []
+    # إذا كان الرابط الخارجي عبارة عن بحث جوجل أو روابط خارجية مباشرة، نرجع قائمة فارغة ليتوجه المستخدم للرابط فوراً
+    if "google.com" in movie_url or "search" in movie_url:
+        return links
+
     try:
-        response = requests.get(movie_url, headers=HEADERS, timeout=8)
+        response = requests.get(movie_url, headers=HEADERS, timeout=7)
         if response.status_code == 200:
             soup = BeautifulSoup(response.text, 'html.parser')
             
-            # جلب السيرفرات أو روابط الـ watch/download المتاحة
             for a_tag in soup.find_all('a', href=True):
                 text = a_tag.text.strip()
                 href = a_tag['href']
                 
-                # فحص الكلمات المفتاحية للتحميل أو المشاهدة
                 if any(word in text.lower() or word in href.lower() for word in ['download', 'تحميل', 'مشاهدة', 'watch', 'server', 'سيرفر']):
                     if href.startswith('http') and not any(l['url'] == href for l in links):
                         links.append({
                             'label': text if len(text) < 20 else "سيرفر مشاهدة/تحميل",
                             'url': href
                         })
-                        if len(links) >= 4:  # نكتفي بأفضل 4 روابط
+                        if len(links) >= 4:
                             break
     except Exception as e:
         logger.error(f"خطأ في استخراج الروابط: {e}")
@@ -127,10 +156,6 @@ async def handle_message(update: Update, context) -> None:
         # البحث الفوري برمجياً في الموقع
         search_results = search_movies_online(user_query)
         
-        if not search_results:
-            await processing_msg.edit_text("❌ عذراً، لم أجد نتائج مطابقة لاسم هذا الفيلم حالياً. جرب كتابة الاسم باللغة الإنجليزية أو بطريقة أخرى.")
-            return
-
         # بناء أزرار بالنتائج التي تم العثور عليها
         buttons = []
         for i, movie in enumerate(search_results):
@@ -150,7 +175,7 @@ async def handle_message(update: Update, context) -> None:
         
         await update.message.reply_text(
             f"🍿 *نتائج البحث لـ:* `{user_query}`\n"
-            f"اختر الفيلم/المسلسل المطلوب لعرض الروابط المباشرة:",
+            f"اختر النتيجة المطلوبة لعرض الروابط المباشرة والبديلة:",
             reply_markup=reply_markup,
             parse_mode='MarkdownV2'
         )
@@ -181,6 +206,17 @@ async def button_callback(update: Update, context) -> None:
                 await query.edit_message_text("❌ انتهت صلاحية الجلسة، يرجى إعادة البحث من جديد.")
                 return
 
+            # إذا كان الرابط الخارجي هو رابط بحث جوجل أو رابط مباشر مجهز مسبقاً للتحايل على الحظر
+            if "google.com" in movie_url or "wecima" in movie_url or "ak.sv" in movie_url:
+                safe_title = movie_title.replace('_', '\\_').replace('*', '\\*').replace('[', '\\[').replace('`', '\\`')
+                msg = (
+                    f"🔗 *بسبب قيود الحماية على السيرفر، يمكنك الانتقال مباشرة للبحث الآمن:*\n\n"
+                    f"🎬 `{safe_title}`\n\n"
+                    f"👉 [اضغط هنا لفتح صفحة النتائج مباشرة]({movie_url})"
+                )
+                await query.edit_message_text(msg, parse_mode='MarkdownV2', disable_web_page_preview=False)
+                return
+
             await query.edit_message_text("📥 جاري استخراج روابط التحميل والمشاهدة...")
             
             # استخراج روابط التحميل من صفحة الفيلم
@@ -198,7 +234,6 @@ async def button_callback(update: Update, context) -> None:
                 reply_markup = InlineKeyboardMarkup(buttons)
                 await query.edit_message_text(msg, reply_markup=reply_markup, parse_mode='MarkdownV2')
             else:
-                # إذا لم نجد روابط مباشرة، نرسل له رابط صفحة الفيلم ليدخل ويشاهد منها
                 msg = (
                     f"✅ *تم العثور على صفحة الفيلم:*\n"
                     f"🎬 `{safe_title}`\n\n"
