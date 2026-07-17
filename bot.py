@@ -1,6 +1,11 @@
 import os
 import sys
 import logging
+import urllib.parse
+import re
+import yt_dlp
+from bs4 import BeautifulSoup
+import requests
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 
@@ -18,452 +23,209 @@ if not TOKEN:
     logger.info("💡 استخدم: export BOT_TOKEN='your_token_here'")
     sys.exit(1)
 
-# ===================== قاعدة البيانات =====================
-MOVIE_DB = {
-    "avatar": {
-        "type": "movie",
-        "parts": 2,
-        "content": [
-            "Avatar Part 1 - Content",
-            "Avatar Part 2 - Content"
-        ],
-        "description": "فيلم Avatar - الجزء الأول والثاني"
-    },
-    "game of thrones": {
-        "type": "series",
-        "episodes": 8,
-        "content": [
-            "Game of Thrones S01E01 - Winter is Coming",
-            "Game of Thrones S01E02 - The Kingsroad",
-            "Game of Thrones S01E03 - Lord Snow",
-            "Game of Thrones S01E04 - Cripples, Bastards, and Broken Things",
-            "Game of Thrones S01E05 - The Wolf and the Lion",
-            "Game of Thrones S01E06 - A Golden Crown",
-            "Game of Thrones S01E07 - You Win or You Die",
-            "Game of Thrones S01E08 - The Pointy End"
-        ],
-        "description": "مسلسل Game of Thrones - الموسم الأول"
-    },
-    "the witcher": {
-        "type": "series",
-        "episodes": 3,
-        "content": [
-            "The Witcher Season 1",
-            "The Witcher Season 2",
-            "The Witcher Season 3"
-        ],
-        "description": "مسلسل The Witcher"
-    },
-    "the godfather": {
-        "type": "movie",
-        "parts": 3,
-        "content": [
-            "The Godfather Part 1",
-            "The Godfather Part 2",
-            "The Godfather Part 3"
-        ],
-        "description": "فيلم The Godfather - جميع الأجزاء"
-    },
-    "inception": {
-        "type": "movie",
-        "parts": 1,
-        "content": ["Inception - Full Movie"],
-        "description": "فيلم Inception"
-    }
+# الرأس الافتراضي لتجنب حظر السكرابينج من المواقع
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
 
-# ===================== دوال المساعدة =====================
-def get_movie_info(name: str):
-    """البحث عن الفيلم/المسلسل بناءً على الاسم"""
-    if not name:
-        return None
-    name_lower = name.strip().lower()
-    return MOVIE_DB.get(name_lower, None)
-
-
-def get_all_titles():
-    """الحصول على جميع العناوين المتاحة"""
-    return list(MOVIE_DB.keys())
-
-
-def parse_callback_data(data: str):
-    """تحليل بيانات رد الاتصال بشكل آمن"""
+# ===================== دالة البحث في مواقع الأفلام =====================
+def search_movies_online(query: str) -> list:
+    """
+    البحث عن الأفلام والمسلسلات في موقع أكوام / سيما كلوب بشكل مباشر 
+    وتحليل نتائج البحث لجلب العناوين وروابط صفحاتها.
+    """
+    results = []
     try:
-        if data == "help":
-            return {'action': 'help'}
+        # قمنا باستخدام محرّك بحث موقع أكوام (Akoam) كمثال قوي ومستقر ومفتوح للبحث
+        encoded_query = urllib.parse.quote(query)
+        search_url = f"https://ak.sv/search?q={encoded_query}"
         
-        parts = data.split(':', 2)
-        if len(parts) < 2:
-            return None
+        response = requests.get(search_url, headers=HEADERS, timeout=10)
+        if response.status_code != 200:
+            return results
+            
+        soup = BeautifulSoup(response.text, 'html.parser')
         
-        action = parts[0]
+        # البحث عن كروت الأفلام في صفحة نتائج البحث
+        # (ملاحظة: قد تحتاج لتحديث الـ selectors إذا تغير تصميم الموقع المستهدف)
+        movie_cards = soup.find_all('div', class_='entry-box') or soup.find_all('div', class_='widget-body')
         
-        if action == "watch":
-            return {
-                'action': 'watch',
-                'movie': parts[1]
-            }
-        elif action in ["ep", "part"]:
-            if len(parts) < 3:
-                return None
-            try:
-                number = int(parts[2])
-                return {
-                    'action': action,
-                    'movie': parts[1],
-                    'number': number
-                }
-            except ValueError:
-                return None
-        
-        return None
+        for card in movie_cards[:6]:  # جلب أول 6 نتائج لتفادي بطء البوت
+            title_tag = card.find('a') or card.find('h3')
+            link_tag = card.find('a', href=True)
+            
+            if title_tag and link_tag:
+                title = title_tag.text.strip()
+                link = link_tag['href']
+                
+                # تصفية العناوين الفارغة والتأكد من جودة الرابط
+                if title and link.startswith('http'):
+                    results.append({
+                        'title': title,
+                        'link': link
+                    })
     except Exception as e:
-        logger.error(f"خطأ في تحليل البيانات: {e}")
-        return None
-
-
-def build_buttons(movie_name: str, movie_data: dict) -> InlineKeyboardMarkup:
-    """بناء أزرار التفاعل بناءً على نوع المحتوى"""
-    buttons = []
+        logger.error(f"خطأ أثناء البحث في موقع الأفلام: {e}")
     
+    return results
+
+# ===================== دالة جلب روابط التشغيل المباشرة =====================
+def extract_stream_links(movie_url: str) -> list:
+    """
+    الدخول لصفحة الفيلم واستخراج روابط التحميل أو المشاهدة المباشرة
+    """
+    links = []
     try:
-        if movie_data['type'] == 'series':
-            total = movie_data.get('episodes', 0)
-            row = []
-            for i in range(1, total + 1):
-                row.append(InlineKeyboardButton(
-                    f"🎬 حلقة {i}",
-                    callback_data=f"ep:{movie_name}:{i}"
-                ))
-                if len(row) == 3:
-                    buttons.append(row)
-                    row = []
-            if row:
-                buttons.append(row)
-
-        elif movie_data['type'] == 'movie':
-            total = movie_data.get('parts', 1)
-            if total > 1:
-                row = []
-                for i in range(1, total + 1):
-                    row.append(InlineKeyboardButton(
-                        f"📽️ جزء {i}",
-                        callback_data=f"part:{movie_name}:{i}"
-                    ))
-                    if len(row) == 3:
-                        buttons.append(row)
-                        row = []
-                if row:
-                    buttons.append(row)
-            else:
-                buttons.append([
-                    InlineKeyboardButton(
-                        "▶️ مشاهدة الفيلم",
-                        callback_data=f"watch:{movie_name}"
-                    )
-                ])
-
-        buttons.append([
-            InlineKeyboardButton("🆘 مساعدة", callback_data="help")
-        ])
-
-        return InlineKeyboardMarkup(buttons)
+        response = requests.get(movie_url, headers=HEADERS, timeout=10)
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # البحث عن أزرار التحميل أو روابط الـ watch/download المباشرة داخل الصفحة
+            # نقوم بالبحث عن أي رابط يحتوي على كلمات تحميل أو مشاهدة دلالية
+            for a_tag in soup.find_all('a', href=True):
+                text = a_tag.text.strip().lower()
+                href = a_tag['href']
+                if 'download' in text or 'تحميل' in text or 'watch' in text or 'مشاهدة' in text:
+                    if href.startswith('http'):
+                        links.append({
+                            'label': a_tag.text.strip() or "رابط مباشر",
+                            'url': href
+                        })
     except Exception as e:
-        logger.error(f"خطأ في بناء الأزرار: {e}")
-        return InlineKeyboardMarkup([[InlineKeyboardButton("❌ خطأ", callback_data="help")]])
-
+        logger.error(f"خطأ في استخراج الروابط المباشرة: {e}")
+    return links[:3] # جلب أفضل 3 روابط فقط
 
 # ===================== معالجات البوت =====================
 async def start(update: Update, context) -> None:
     """رسالة الترحيب الرئيسية"""
     try:
         welcome_msg = (
-            "🎬 *مرحباً بك في بوت الأفلام والمسلسلات\\!*\n\n"
-            "📌 *كيفية الاستخدام:*\n"
-            "• أرسل اسم فيلم أو مسلسل للبحث عنه\n"
-            "• اختر الحلقة أو الجزء من الأزرار\n"
-            "• سيتم إرسال المحتوى مباشرة لك\\!\n\n"
-            "📺 *الأفلام والمسلسلات المتاحة:*\n"
+            "🎬 *مرحباً بك في بوت البحث عن الأفلام والمسلسلات\\!* \n\n"
+            "📌 *كل ما عليك فعله هو إرسال اسم الفيلم أو المسلسل مباشرة* وسأقوم بالبحث عنه تلقائياً في المواقع وجلب روابط المشاهدة والتحميل لك\\!\n\n"
+            "💡 *مثال للبحث:* `Interstellar` أو `The Witcher`"
         )
-
-        titles = get_all_titles()
-        for title in titles[:5]:
-            welcome_msg += f"• `{title.title()}`\n"
-
-        if len(titles) > 5:
-            welcome_msg += f"\nو {len(titles) - 5} عناوين أخرى\\.\\.\\."
-
-        welcome_msg += "\n\n💡 *جرب إرسال:* `Avatar`"
-
         await update.message.reply_text(welcome_msg, parse_mode='MarkdownV2')
     except Exception as e:
         logger.error(f"خطأ في أمر start: {e}")
-        await update.message.reply_text("❌ حدث خطأ في معالجة الطلب.")
-
-
-async def help_command(update: Update, context) -> None:
-    """أمر المساعدة"""
-    try:
-        help_msg = (
-            "🆘 *كيفية استخدام البوت:*\n\n"
-            "1️⃣ أرسل اسم فيلم أو مسلسل\n"
-            "2️⃣ اختر الحلقة أو الجزء من الأزرار\n"
-            "3️⃣ سيتم إرسال المحتوى مباشرة\\!\n\n"
-            "📌 *الأوامر المتاحة:*\n"
-            "/start \\- عرض رسالة الترحيب\n"
-            "/help \\- عرض هذه المساعدة\n"
-            "/list \\- عرض جميع العناوين المتاحة\n"
-            "/search \\[اسم\\] \\- البحث عن فيلم/مسلسل"
-        )
-        await update.message.reply_text(help_msg, parse_mode='MarkdownV2')
-    except Exception as e:
-        logger.error(f"خطأ في أمر help: {e}")
-        await update.message.reply_text("❌ حدث خطأ في معالجة الطلب.")
-
-
-async def list_command(update: Update, context) -> None:
-    """عرض جميع العناوين المتاحة"""
-    try:
-        titles = get_all_titles()
-        if not titles:
-            await update.message.reply_text("❌ لا توجد عناوين متاحة حالياً.")
-            return
-
-        msg = "📚 *جميع العناوين المتاحة:*\n\n"
-        for i, title in enumerate(titles, 1):
-            movie_data = MOVIE_DB[title]
-            type_emoji = "🎬" if movie_data["type"] == "movie" else "📺"
-            msg += f"{i}\\. {type_emoji} `{title.title()}`\n"
-
-        await update.message.reply_text(msg, parse_mode='MarkdownV2')
-    except Exception as e:
-        logger.error(f"خطأ في أمر list: {e}")
-        await update.message.reply_text("❌ حدث خطأ في معالجة الطلب.")
-
-
-async def search_command(update: Update, context) -> None:
-    """البحث عن فيلم/مسلسل باستخدام الأمر"""
-    try:
-        if not context.args:
-            await update.message.reply_text(
-                "❌ يرجى إدخال اسم الفيلم/المسلسل\\.\n\nمثال: `/search avatar`",
-                parse_mode='MarkdownV2'
-            )
-            return
-
-        search_query = ' '.join(context.args)
-        movie_data = get_movie_info(search_query)
-
-        if not movie_data:
-            await update.message.reply_text(
-                f"❌ لم أجد `{search_query}` في قاعدة البيانات.",
-                parse_mode='MarkdownV2'
-            )
-            return
-
-        context.user_data['current_movie'] = search_query.strip().lower()
-        reply_markup = build_buttons(search_query.strip().lower(), movie_data)
-
-        msg = f"✅ *تم العثور على:* `{search_query}`\n"
-        if movie_data['type'] == 'series':
-            msg += f"📺 عدد الحلقات: {movie_data['episodes']}"
-        else:
-            msg += f"🎬 عدد الأجزاء: {movie_data['parts']}"
-
-        await update.message.reply_text(msg, reply_markup=reply_markup, parse_mode='MarkdownV2')
-    except Exception as e:
-        logger.error(f"خطأ في أمر search: {e}")
-        await update.message.reply_text("❌ حدث خطأ في معالجة الطلب.")
 
 
 async def handle_message(update: Update, context) -> None:
-    """معالجة الرسائل النصية"""
+    """معالجة الرسائل والبحث الفوري عن الفيلم"""
     try:
-        user_text = update.message.text.strip()
-        if not user_text:
-            await update.message.reply_text("❌ يرجى إدخال اسم صحيح.")
+        user_query = update.message.text.strip()
+        if not user_query:
             return
 
-        movie_data = get_movie_info(user_text)
+        processing_msg = await update.message.reply_text("🔍 جاري البحث في المواقع، يرجى الانتظار ثواني...")
+        
+        # البحث الفوري برمجياً في الموقع
+        search_results = search_movies_online(user_query)
+        
+        if not search_results:
+            await processing_msg.edit_text("❌ عذراً، لم أجد نتائج مطابقة لاسم هذا الفيلم حالياً. جرب كتابة الاسم باللغة الإنجليزية أو بطريقة أخرى.")
+            return
 
-        if not movie_data:
-            all_titles = get_all_titles()
-            suggestions = [title for title in all_titles if user_text.lower() in title]
-
-            if suggestions:
-                msg = f"❌ لم أجد `{user_text}`، لكن وجدت هذه العناوين المشابهة:\n\n"
-                for title in suggestions[:5]:
-                    msg += f"• `{title.title()}`\n"
-                msg += "\n💡 أرسل أحد الأسماء أعلاه للبحث."
-                await update.message.reply_text(msg, parse_mode='MarkdownV2')
-            else:
-                await update.message.reply_text(
-                    f"❌ عذراً، لم أجد `{user_text}` في قاعدة البيانات\\.\n\n"
-                    f"استخدم /list لعرض جميع العناوين المتاحة\\.",
-                    parse_mode='MarkdownV2'
+        # بناء أزرار بالنتائج التي تم العثور عليها
+        buttons = []
+        for i, movie in enumerate(search_results):
+            # نقوم بحفظ روابط الأفلام مؤقتاً في الـ user_data للوصول إليها عند الضغط على الزر
+            context.user_data[f"movie_link_{i}"] = movie['link']
+            context.user_data[f"movie_title_{i}"] = movie['title']
+            
+            buttons.append([
+                InlineKeyboardButton(
+                    f"🎬 {movie['title']}",
+                    callback_data=f"get_links:{i}"
                 )
-            return
+            ])
+            
+        reply_markup = InlineKeyboardMarkup(buttons)
+        await processing_msg.delete()
+        
+        await update.message.reply_text(
+            f"🍿 *نتائج البحث لـ:* `{user_query}`\n"
+            f"اختر الفيلم/المسلسل المطلوب لعرض الروابط المباشرة:",
+            reply_markup=reply_markup,
+            parse_mode='MarkdownV2'
+        )
 
-        context.user_data['current_movie'] = user_text.strip().lower()
-        reply_markup = build_buttons(user_text.strip().lower(), movie_data)
-
-        msg = f"✅ *تم العثور على:* `{user_text.title()}`\n\n"
-        if movie_data['type'] == 'series':
-            msg += f"📺 *مسلسل* \\- عدد الحلقات: {movie_data['episodes']}\n"
-            msg += "اختر الحلقة المناسبة:"
-        else:
-            if movie_data['parts'] > 1:
-                msg += f"🎬 *فيلم* \\- عدد الأجزاء: {movie_data['parts']}\n"
-                msg += "اختر الجزء المناسب:"
-            else:
-                msg += "🎬 *فيلم*\nاضغط على زر المشاهدة أدناه\\."
-
-        await update.message.reply_text(msg, reply_markup=reply_markup, parse_mode='MarkdownV2')
     except Exception as e:
-        logger.error(f"خطأ في معالجة الرسالة: {e}")
-        await update.message.reply_text("❌ حدث خطأ أثناء معالجة رسالتك.")
+        logger.error(f"خطأ في معالجة رسالة البحث: {e}")
+        await update.message.reply_text("❌ حدث خطأ أثناء عملية البحث.")
 
 
 async def button_callback(update: Update, context) -> None:
-    """معالجة ضغط الأزرار - إرسال المحتوى المباشر"""
+    """معالجة ضغط المستخدم على الفيلم المختار وجلب روابط التحميل له"""
     try:
         query = update.callback_query
         await query.answer()
 
-        parsed_data = parse_callback_data(query.data)
-
-        if parsed_data is None:
-            await query.edit_message_text("❌ حدث خطأ في البيانات.")
+        data_parts = query.data.split(':')
+        if len(data_parts) < 2:
             return
 
-        action = parsed_data.get('action')
+        action = data_parts[0]
+        movie_index = data_parts[1]
 
-        if action == "help":
-            help_msg = (
-                "🆘 *مساعدة سريعة:*\n\n"
-                "• أرسل اسم فيلم أو مسلسل للبحث\n"
-                "• استخدم /list لعرض جميع العناوين\n"
-                "• استخدم /search \\[اسم\\] للبحث المباشر\n\n"
-                "💡 سيتم إرسال المحتوى مباشرة لك عند اختيار حلقة أو جزء\\."
-            )
-            await query.edit_message_text(help_msg, parse_mode='MarkdownV2')
-            return
+        if action == "get_links":
+            movie_url = context.user_data.get(f"movie_link_{movie_index}")
+            movie_title = context.user_data.get(f"movie_title_{movie_index}", "الفيلم المختار")
 
-        movie_name = parsed_data.get('movie')
-        movie_data = get_movie_info(movie_name)
+            if not movie_url:
+                await query.edit_message_text("❌ انتهت صلاحية الجلسة، يرجى إعادة البحث من جديد.")
+                return
 
-        if not movie_data:
-            await query.edit_message_text("❌ حدث خطأ، لم أعد أجد هذا المحتوى.")
-            return
+            await query.edit_message_text("📥 جاري استخراج روابط التحميل والمشاهدة...")
+            
+            # استخراج روابط التحميل من صفحة الفيلم
+            download_links = extract_stream_links(movie_url)
+            
+            # تنظيف العنوان لتوافقه مع ماركداون
+            safe_title = movie_title.replace('_', '\\_').replace('*', '\\*').replace('[', '\\[').replace('`', '\\`')
 
-        if action == "watch":
-            # فيلم واحد
-            if movie_data.get('content'):
-                content = movie_data['content'][0]
-                await query.edit_message_text(
-                    f"🎬 *{movie_name.title()}*\n\n"
-                    f"📥 *المحتوى:*\n`{content}`\n\n"
-                    f"✅ تم إرسال المحتوى بنجاح\\!",
-                    parse_mode='MarkdownV2'
-                )
+            if download_links:
+                msg = f"✅ *تم تجهيز روابط الفيلم:* \n🎬 `{safe_title}`\n\n"
+                buttons = []
+                for link in download_links:
+                    buttons.append([InlineKeyboardButton(f"📥 {link['label']}", url=link['url'])])
+                
+                # إضافة زر العودة أو البحث الجديد
+                reply_markup = InlineKeyboardMarkup(buttons)
+                await query.edit_message_text(msg, reply_markup=reply_markup, parse_mode='MarkdownV2')
             else:
-                await query.edit_message_text("❌ عذراً، لا يوجد محتوى لهذا الفيلم.")
-
-        elif action == "ep":
-            # حلقة من مسلسل
-            episode_num = parsed_data.get('number')
-            if episode_num and episode_num <= len(movie_data.get('content', [])):
-                content = movie_data['content'][episode_num - 1]
-                await query.edit_message_text(
-                    f"📺 *{movie_name.title()}* \\- حلقة {episode_num}\n\n"
-                    f"📥 *المحتوى:*\n`{content}`\n\n"
-                    f"✅ تم إرسال الحلقة بنجاح\\!",
-                    parse_mode='MarkdownV2'
+                # إذا لم نجد روابط مباشرة، نرسل له رابط صفحة الفيلم مباشرة ليدخل ويشاهد منها
+                msg = (
+                    f"✅ *تم العثور على صفحة الفيلم:*\n"
+                    f"🎬 `{safe_title}`\n\n"
+                    f"🔗 [اضغط هنا للمشاهدة والتحميل المباشر من الموقع]({movie_url})"
                 )
-            else:
-                await query.edit_message_text(f"❌ عذراً، لا يوجد محتوى للحلقة {episode_num}.")
-
-        elif action == "part":
-            # جزء من فيلم
-            part_num = parsed_data.get('number')
-            if part_num and part_num <= len(movie_data.get('content', [])):
-                content = movie_data['content'][part_num - 1]
-                await query.edit_message_text(
-                    f"🎬 *{movie_name.title()}* \\- جزء {part_num}\n\n"
-                    f"📥 *المحتوى:*\n`{content}`\n\n"
-                    f"✅ تم إرسال الجزء بنجاح\\!",
-                    parse_mode='MarkdownV2'
-                )
-            else:
-                await query.edit_message_text(f"❌ عذراً، لا يوجد محتوى للجزء {part_num}.")
-
-        else:
-            await query.edit_message_text("❌ إجراء غير معروف.")
+                await query.edit_message_text(msg, parse_mode='MarkdownV2', disable_web_page_preview=False)
 
     except Exception as e:
-        logger.error(f"خطأ في معالجة الزر: {e}")
-        try:
-            await query.edit_message_text("❌ حدث خطأ أثناء معالجة طلبك.")
-        except:
-            logger.error("فشل إرسال رسالة الخطأ")
-
-
-async def error_handler(update: Update, context) -> None:
-    """معالج الأخطاء العام"""
-    logger.error(f"تحديث: {update}")
-    logger.error(f"حدث خطأ: {context.error}")
-
-    try:
-        if update and update.effective_message:
-            await update.effective_message.reply_text(
-                "❌ حدث خطأ غير متوقع\\. يرجى المحاولة مرة أخرى لاحقاً\\.",
-                parse_mode='MarkdownV2'
-            )
-    except Exception as e:
-        logger.error(f"فشل إرسال رسالة الخطأ: {e}")
+        logger.error(f"خطأ في معالجة الأزرار: {e}")
+        await query.edit_message_text("❌ حدث خطأ أثناء جلب روابط هذا الفيلم.")
 
 
 # ===================== تشغيل البوت =====================
 def main() -> None:
-    """الوظيفة الرئيسية - بدء تشغيل البوت"""
     try:
-        logger.info("🚀 بدء تشغيل البوت...")
-        logger.info(f"✅ Token موجود: {bool(TOKEN)}")
-        logger.info(f"📚 عدد العناوين في قاعدة البيانات: {len(MOVIE_DB)}")
-
-        # إنشاء التطبيق
+        logger.info("🚀 بدء تشغيل بوت البحث التلقائي السريع...")
+        
         application = (
             Application.builder()
             .token(TOKEN)
-            .connect_timeout(30)
-            .read_timeout(30)
-            .write_timeout(30)
             .build()
         )
 
-        # إضافة المعالجات
         application.add_handler(CommandHandler("start", start))
-        application.add_handler(CommandHandler("help", help_command))
-        application.add_handler(CommandHandler("list", list_command))
-        application.add_handler(CommandHandler("search", search_command))
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
         application.add_handler(CallbackQueryHandler(button_callback))
 
-        # إضافة معالج الأخطاء
-        application.add_error_handler(error_handler)
-
-        # بدء البوت
-        logger.info("✅ البوت يعمل الآن...")
-        logger.info("💡 اضغط Ctrl+C للإيقاف")
-        application.run_polling(
-            allowed_updates=Update.ALL_TYPES,
-            drop_pending_updates=True
-        )
+        application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
     except Exception as e:
-        logger.error(f"❌ فشل تشغيل البوت: {e}", exc_info=True)
+        logger.error(f"❌ فشل تشغيل البوت: {e}")
         sys.exit(1)
-
 
 if __name__ == '__main__':
     main()
