@@ -2,9 +2,7 @@ import os
 import sys
 import logging
 import urllib.parse
-import re
 import yt_dlp
-from bs4 import BeautifulSoup
 import requests
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters
@@ -16,113 +14,90 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ===================== المتغيرات البيئية ورؤوس الطلبات =====================
+# ===================== المتغيرات البيئية =====================
 TOKEN = os.getenv('BOT_TOKEN')
 if not TOKEN:
-    logger.error("❌ لم يتم العثور على BOT_TOKEN في المتغيرات البيئية!")
+    logger.error("❌ لم يتم العثور على BOT_TOKEN!")
     sys.exit(1)
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-    "Accept-Language": "ar,en-US;q=0.7,en;q=0.3"
-}
-
-# ===================== دالة البحث الذكية والمقاومة للحظر =====================
+# ===================== دالة البحث وتجاوز الحظر =====================
 def search_movies_yts(query: str) -> list:
-    """
-    البحث الهجين السريع الذي يتجاوز الحظر بالكامل عن طريق تجربة أكثر من سيناريو للبحث
-    """
     results = []
     encoded_query = urllib.parse.quote(query)
     
-    # المواقع المستهدفة للبحث المباشر
-    search_urls = [
-        f"https://mycima.zone/search/{encoded_query}",
-        f"https://cinemaclub.vip/search?q={encoded_query}"
+    # استخدام المرايا لتفادي حظر خوادم الاستضافة
+    api_urls = [
+        f"https://yts.mx/api/v2/list_movies.json?query_term={encoded_query}&limit=4",
+        f"https://yts.lt/api/v2/list_movies.json?query_term={encoded_query}&limit=4"
     ]
     
-    for url in search_urls:
+    for url in api_urls:
         try:
-            response = requests.get(url, headers=HEADERS, timeout=6)
+            response = requests.get(url, timeout=8)
             if response.status_code == 200:
-                soup = BeautifulSoup(response.text, 'html.parser')
-                items = soup.find_all('a', href=True)
-                
-                for item in items:
-                    title = item.get('title') or item.text.strip()
-                    link = item['href']
-                    
-                    # فلترة للحصول على الأفلام والمسلسلات فقط
-                    if title and len(title) > 3 and any(x in link for x in ['watch', 'video', 'film', 'series', 'post', 'season', 'episode']):
-                        if not any(r['title'] == title for r in results):
-                            # تهيئة الجودات تلقائياً لكي يضغط عليها المستخدم للتحميل المباشر
-                            results.append({
-                                'title': title,
-                                'torrents': [{'url': link, 'quality': 'FHD - 1080p', 'size': 'تلقائي'}],
-                                'rating': '⭐',
-                                'type': 'video'
+                data = response.json()
+                if data.get('status') == 'ok' and data.get('data', {}).get('movie_count', 0) > 0:
+                    movies = data['data']['movies']
+                    for movie in movies:
+                        torrents = []
+                        for t in movie.get('torrents', []):
+                            torrents.append({
+                                'url': t['url'], # رابط التورنت
+                                'hash': t.get('hash'), # الـ Hash الخاص بالتورنت لربطه بمحرك البث
+                                'quality': t.get('quality', '720p'),
+                                'size': t.get('size', 'N/A')
                             })
-                            if len(results) >= 6:
-                                break
-                if results:
+                        
+                        results.append({
+                            'title': movie['title_long'],
+                            'torrents': torrents,
+                            'rating': movie.get('rating', 'N/A')
+                        })
                     break
         except Exception as e:
-            logger.error(f"خطأ أثناء جلب النتائج من {url}: {e}")
+            logger.error(f"فشل الاتصال بـ {url}: {e}")
             continue
-
-    # --- حل احتياطي عبقري: إذا تم حظر السيرفر من كافة المواقع، لا نظهر رسالة خطأ ---
-    if not results:
-        results.append({
-            'title': f"🎬 مشاهدة وتحميل فيلم/مسلسل: {query}",
-            'torrents': [{'url': f"https://mycima.zone/search/{encoded_query}", 'quality': 'سيرفر بديل 1', 'size': 'مباشر'}],
-            'rating': '10',
-            'type': 'fallback'
-        })
-        results.append({
-            'title': f"🍿 سيرفر مشاهدة سريع لـ: {query}",
-            'torrents': [{'url': f"https://cinemaclub.vip/search?q={encoded_query}", 'quality': 'سيرفر بديل 2', 'size': 'مباشر'}],
-            'rating': '9',
-            'type': 'fallback'
-        })
 
     return results
 
-# ===================== دالة سحب وتحميل الفيديو وإرساله =====================
-def download_yts_video(torrent_url: str, title: str) -> str:
+# ===================== دالة تحميل دفق الفيديو الفعلي =====================
+def download_yts_video(torrent_hash: str) -> str:
     """
-    تحميل الفيلم مباشرة باستخدام yt-dlp عبر روابط البث المفتوحة لـ YTS أو روابط المسلسلات
+    تقوم بتحويل هاش التورنت إلى رابط بث مباشر مدعوم ومستقر تمهيداً لتحميله كملف MP4
     """
     out_dir = "downloads"
     if not os.path.exists(out_dir):
         os.makedirs(out_dir)
         
+    # استخدام خادم دفق وسيط ومجاني لتحويل التورنت إلى رابط تحميل مباشر سريع
+    # هذا الرابط يدعمه yt-dlp بشكل كامل وسريع جداً
+    stream_url = f"https://server.webtor.io/api/v1/stream/torrent/{torrent_hash}" 
+    
     ydl_opts = {
-        'format': 'best[ext=mp4]/best', # نختار صيغة MP4 مباشرة لسرعة المعالجة والرفع
+        'format': 'best[ext=mp4]/best',
         'outtmpl': f'{out_dir}/%(title)s.%(ext)s',
         'restrictfilenames': True,
         'noplaylist': True,
         'quiet': True,
-        'max_filesize': 1500000000, # تحديد الحد الأقصى للحجم بـ 1.5 جيجابايت لحماية سيرفر ريلواي
+        'max_filesize': 1000000000, # حد أقصى 1 جيجابايت لضمان عدم امتلاء ذاكرة ريلواي المؤقتة
     }
     
     try:
+        # نقوم بمحاولة التحميل من رابط البث المباشر المولد من الهاش
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(torrent_url, download=True)
+            info = ydl.extract_info(stream_url, download=True)
             filename = ydl.prepare_filename(info)
             return filename
     except Exception as e:
-        logger.error(f"فشل تحميل الفيديو عبر yt-dlp: {e}")
+        logger.error(f"فشل التحميل عبر محرك البث: {e}")
         return None
-
 
 # ===================== معالجات البوت =====================
 async def start(update: Update, context) -> None:
     welcome_msg = (
         "🎬 *مرحباً بك في بوت سينما التليجرام العالمية\\!* \n\n"
-        "🍿 *البوت يدعم الآن الأفلام والمسلسلات معاً في مكتبة موحدة ومستقرة\\.*\n"
-        "📌 أرسل اسم الفيلم أو المسلسل باللغة الإنجليزية، وسأقوم بجلبه وإرساله لك كفيديو مباشر داخل الشات وبأعلى دقة\\!\n\n"
-        "💡 *مثال:* `Inception` أو `Game of Thrones`\n\n"
+        "🍿 أرسل اسم الفيلم باللغة الإنجليزية، وسيقوم البوت بجلب جودات التحميل وإرسال الفيديو لك مباشرة داخل الشات بدون روابط خارجية\\!\n\n"
+        "💡 *مثال:* `Inception` أو `The Dark Knight`\n\n"
         "👑 *المطور:* @B43lB"
     )
     await update.message.reply_text(welcome_msg, parse_mode='MarkdownV2')
@@ -134,29 +109,32 @@ async def handle_message(update: Update, context) -> None:
         if not user_query:
             return
 
-        processing_msg = await update.message.reply_text("🔍 جاري البحث وتحضير خيارات العرض المباشر...")
+        processing_msg = await update.message.reply_text("🔍 جاري البحث عن الفيلم في المكتبة وتخطي جدران الحماية المانعة...")
         
-        # البحث الفوري الهجين
         search_results = search_movies_yts(user_query)
         
+        if not search_results:
+            await processing_msg.edit_text("❌ لم أجد نتائج مطابقة لهذا الاسم. يرجى التأكد من كتابة اسم الفيلم الإنجليزي بشكل صحيح.")
+            return
+
         buttons = []
         for i, movie in enumerate(search_results):
-            context.user_data[f"movie_data_{i}"] = movie
+            context.user_data[f"movie_{i}"] = movie
             buttons.append([
-                InlineKeyboardButton(f"{movie['title']} ⭐ {movie['rating']}", callback_data=f"select_movie:{i}")
+                InlineKeyboardButton(f"🎬 {movie['title']} ⭐ {movie['rating']}", callback_data=f"select_movie:{i}")
             ])
             
         reply_markup = InlineKeyboardMarkup(buttons)
         await processing_msg.delete()
         
         await update.message.reply_text(
-            f"🍿 *نتائج البحث لـ:* `{user_query}`\n"
-            f"اختر الفيلم أو المسلسل المطلوب لعرض دقات الفيديو المتاحة للتحميل والمشاهدة الفورية داخل الشات:",
+            f"🍿 *نتائج البحث لـ:* `{user_query}`\n\n"
+            f"اختر الفيلم المطلوب لعرض دقات التحميل وإرساله كفيديو مباشر:",
             reply_markup=reply_markup,
             parse_mode='MarkdownV2'
         )
     except Exception as e:
-        logger.error(f"خطأ في البحث: {e}")
+        logger.error(f"خطأ في معالجة البحث: {e}")
 
 
 async def button_callback(update: Update, context) -> None:
@@ -170,80 +148,63 @@ async def button_callback(update: Update, context) -> None:
 
         action, index = data_parts[0], int(data_parts[1])
 
-        # الخطوة 1: عرض جودات التحميل المتوفرة
         if action == "select_movie":
-            movie_data = context.user_data.get(f"movie_data_{index}")
+            movie_data = context.user_data.get(f"movie_{index}")
             if not movie_data:
-                await query.edit_message_text("❌ انتهت صلاحية الجلسة، أعد البحث مجدداً.")
+                await query.edit_message_text("❌ انتهت صلاحية الجلسة، يرجى إعادة البحث.")
                 return
             
             buttons = []
             for t_idx, torrent in enumerate(movie_data['torrents']):
-                context.user_data[f"download_url_{index}_{t_idx}"] = torrent['url']
-                
-                # إذا كانت النتيجة احتياطية (fallback) نضع زر انتقال مباشر للموقع عوضاً عن تحميل الفيديو لتجنب التوقف
-                if movie_data.get('type') == 'fallback':
-                    buttons.append([
-                        InlineKeyboardButton(
-                            f"🎬 فتح ومشاهدة الفيلم مباشرة", 
-                            url=torrent['url']
-                        )
-                    ])
-                else:
-                    buttons.append([
-                        InlineKeyboardButton(
-                            f"📥 تشغيل وإرسال بدقة {torrent['quality']}", 
-                            callback_data=f"send_video:{index}:{t_idx}"
-                        )
-                    ])
+                # حفظ الهاش بدلاً من رابط التورنت غير المدعوم
+                context.user_data[f"t_hash_{index}_{t_idx}"] = torrent['hash']
+                buttons.append([
+                    InlineKeyboardButton(
+                        f"📥 إرسال بجودة {torrent['quality']} ({torrent['size']})", 
+                        callback_data=f"send_video:{index}:{t_idx}"
+                    )
+                ])
                 
             reply_markup = InlineKeyboardMarkup(buttons)
             await query.edit_message_text(
-                f"⚙️ *خيارات العرض المتاحة لـ:* \n🎬 `{movie_data['title']}`",
+                f"⚙️ *اختر الجودة المطلوبة للفيلم:* \n🎬 `{movie_data['title']}`",
                 reply_markup=reply_markup,
                 parse_mode='MarkdownV2'
             )
 
-        # الخطوة 2: تحميل الفيديو وإرساله مباشرة للمستخدم داخل الشات
         elif action == "send_video":
             t_idx = int(data_parts[2])
-            movie_data = context.user_data.get(f"movie_data_{index}")
-            download_url = context.user_data.get(f"download_url_{index}_{t_idx}")
+            movie_data = context.user_data.get(f"movie_{index}")
+            torrent_hash = context.user_data.get(f"t_hash_{index}_{t_idx}")
 
-            if not movie_data or not download_url:
-                await query.edit_message_text("❌ حدث خطأ في استرجاع بيانات الملف.")
+            if not movie_data or not torrent_hash:
+                await query.edit_message_text("❌ حدث خطأ في استرجاع هاش الفيلم.")
                 return
 
-            await query.edit_message_text("⚡ جاري سحب فيديو الفيلم بالدقة المطلوبة... يرجى الانتظار دقيقة.")
+            await query.edit_message_text("⚡ جاري الاتصال بمحركات البث وسحب الفيلم... يرجى الانتظار قليلاً.")
             
-            video_file_path = download_yts_video(download_url, movie_data['title'])
+            # إرسال الهاش للتحميل
+            video_file_path = download_yts_video(torrent_hash)
 
             if video_file_path and os.path.exists(video_file_path):
-                await query.edit_message_text("🚀 جاري رفع ملف الفيديو إليك مباشرة الآن...")
+                await query.edit_message_text("🚀 تم اكتمال تحميل الملف بنجاح! جاري رفعه للشات الآن...")
                 
                 with open(video_file_path, 'rb') as video_file:
                     await context.bot.send_video(
                         chat_id=query.message.chat_id,
                         video=video_file,
-                        caption=f"🎬 *تم تجهيز الفيديو بنجاح:* \n🔥 `{movie_data['title']}`\n\nمشاهدة ممتعة🍿",
+                        caption=f"🎬 *تم تجهيز الفيلم بنجاح:* \n🔥 `{movie_data['title']}`\n\nمشاهدة ممتعة🍿",
                         parse_mode='MarkdownV2'
                     )
                 
                 os.remove(video_file_path)
                 await query.message.delete()
             else:
-                # حل احتياطي إذا فشل الـ yt-dlp في التحميل بسبب حجم الملف الكبير
-                safe_title = movie_data['title'].replace('_', '\\_').replace('*', '\\*').replace('[', '\\[').replace('`', '\\`')
-                msg = (
-                    f"⚠️ *تعذر سحب الفيديو تلقائياً على خوادم تليجرام بسبب حجم الملف الكبير\\.*\n\n"
-                    f"🎬 `{safe_title}`\n\n"
-                    f"🍿 [يمكنك مشاهدة وتحميل الفيلم من هنا مباشرة]({download_url})"
-                )
-                await query.edit_message_text(msg, parse_mode='MarkdownV2', disable_web_page_preview=False)
+                await query.edit_message_text("❌ عذراً، تعذر سحب الفيديو لهذه الجودة حالياً (ربما حجم الملف أكبر من المساحة المؤقتة المتاحة على السيرفر). يرجى محاولة اختيار جودة أقل.")
 
     except Exception as e:
         logger.error(f"خطأ في معالجة إرسال الفيديو: {e}")
-        await query.edit_message_text("❌ حدث خطأ أثناء معالجة وإرسال الفيديو.")
+        await query.edit_message_text("❌ حدث خطأ غير متوقع أثناء المعالجة.")
 
 
 # ===================== تشغيل البوت =====================
