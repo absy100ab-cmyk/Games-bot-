@@ -28,72 +28,78 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
 
-# ===================== دالة البحث في مواقع الأفلام =====================
+# ===================== دالة البحث المطورة والسريعة =====================
 def search_movies_online(query: str) -> list:
     """
-    البحث عن الأفلام والمسلسلات في موقع أكوام / سيما كلوب بشكل مباشر 
-    وتحليل نتائج البحث لجلب العناوين وروابط صفحاتها.
+    البحث السريع والمستقر في محرك بحث سينمائي بديل يضمن جلب العناوين والروابط
     """
     results = []
     try:
-        # قمنا باستخدام محرّك بحث موقع أكوام (Akoam) كمثال قوي ومستقر ومفتوح للبحث
+        # استخدام صيغة بحث في موقع موثوق ومستقر مثل عائلة Cima (وي سيما البديل أو لودي نت)
         encoded_query = urllib.parse.quote(query)
-        search_url = f"https://ak.sv/search?q={encoded_query}"
+        # نستخدم رابط محرك بحث مرن ومستقر 
+        search_url = f"https://wecima.show/search/{encoded_query}"
         
-        response = requests.get(search_url, headers=HEADERS, timeout=10)
+        response = requests.get(search_url, headers=HEADERS, timeout=8)
         if response.status_code != 200:
-            return results
-            
-        soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # البحث عن كروت الأفلام في صفحة نتائج البحث
-        # (ملاحظة: قد تحتاج لتحديث الـ selectors إذا تغير تصميم الموقع المستهدف)
-        movie_cards = soup.find_all('div', class_='entry-box') or soup.find_all('div', class_='widget-body')
-        
-        for card in movie_cards[:6]:  # جلب أول 6 نتائج لتفادي بطء البوت
-            title_tag = card.find('a') or card.find('h3')
-            link_tag = card.find('a', href=True)
-            
-            if title_tag and link_tag:
-                title = title_tag.text.strip()
-                link = link_tag['href']
-                
-                # تصفية العناوين الفارغة والتأكد من جودة الرابط
-                if title and link.startswith('http'):
-                    results.append({
-                        'title': title,
-                        'link': link
-                    })
-    except Exception as e:
-        logger.error(f"خطأ أثناء البحث في موقع الأفلام: {e}")
-    
-    return results
+            # محاولة بديلة في حال تعطل السيرفر الأول
+            search_url = f"https://mycima.tube/search/{encoded_query}"
+            response = requests.get(search_url, headers=HEADERS, timeout=8)
 
-# ===================== دالة جلب روابط التشغيل المباشرة =====================
-def extract_stream_links(movie_url: str) -> list:
-    """
-    الدخول لصفحة الفيلم واستخراج روابط التحميل أو المشاهدة المباشرة
-    """
-    links = []
-    try:
-        response = requests.get(movie_url, headers=HEADERS, timeout=10)
         if response.status_code == 200:
             soup = BeautifulSoup(response.text, 'html.parser')
             
-            # البحث عن أزرار التحميل أو روابط الـ watch/download المباشرة داخل الصفحة
-            # نقوم بالبحث عن أي رابط يحتوي على كلمات تحميل أو مشاهدة دلالية
+            # البحث عن الروابط والعناوين داخل الهيكل العام للموقع
+            # يبحث عن تصنيفات الأفلام (Grid Class)
+            items = soup.find_all('a', href=True)
+            for item in items:
+                title = item.get('title') or item.text.strip()
+                link = item['href']
+                
+                # التحقق من أن العنصر هو فيلم أو مسلسل وليس رابطاً جانبياً
+                if title and len(title) > 3 and ('watch' in link or '/post/' in link or '/video/' in link or 'film' in link or 'series' in link):
+                    # تجنب تكرار نفس العنوان في القائمة
+                    if not any(r['title'] == title for r in results):
+                        results.append({
+                            'title': title,
+                            'link': link
+                        })
+                        if len(results) >= 6:  # نكتفي بأول 6 نتائج لسرعة الاستجابة
+                            break
+    except Exception as e:
+        logger.error(f"خطأ أثناء البحث السينمائي: {e}")
+    
+    return results
+
+# ===================== دالة جلب الروابط المباشرة السريعة =====================
+def extract_stream_links(movie_url: str) -> list:
+    """
+    استخراج روابط التحميل أو المشاهدة المباشرة من صفحة الفيلم
+    """
+    links = []
+    try:
+        response = requests.get(movie_url, headers=HEADERS, timeout=8)
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # جلب السيرفرات أو روابط الـ watch/download المتاحة
             for a_tag in soup.find_all('a', href=True):
-                text = a_tag.text.strip().lower()
+                text = a_tag.text.strip()
                 href = a_tag['href']
-                if 'download' in text or 'تحميل' in text or 'watch' in text or 'مشاهدة' in text:
-                    if href.startswith('http'):
+                
+                # فحص الكلمات المفتاحية للتحميل أو المشاهدة
+                if any(word in text.lower() or word in href.lower() for word in ['download', 'تحميل', 'مشاهدة', 'watch', 'server', 'سيرفر']):
+                    if href.startswith('http') and not any(l['url'] == href for l in links):
                         links.append({
-                            'label': a_tag.text.strip() or "رابط مباشر",
+                            'label': text if len(text) < 20 else "سيرفر مشاهدة/تحميل",
                             'url': href
                         })
+                        if len(links) >= 4:  # نكتفي بأفضل 4 روابط
+                            break
     except Exception as e:
-        logger.error(f"خطأ في استخراج الروابط المباشرة: {e}")
-    return links[:3] # جلب أفضل 3 روابط فقط
+        logger.error(f"خطأ في استخراج الروابط: {e}")
+    return links
+
 
 # ===================== معالجات البوت =====================
 async def start(update: Update, context) -> None:
@@ -128,7 +134,7 @@ async def handle_message(update: Update, context) -> None:
         # بناء أزرار بالنتائج التي تم العثور عليها
         buttons = []
         for i, movie in enumerate(search_results):
-            # نقوم بحفظ روابط الأفلام مؤقتاً في الـ user_data للوصول إليها عند الضغط على الزر
+            # حفظ الروابط مؤقتاً في الـ user_data
             context.user_data[f"movie_link_{i}"] = movie['link']
             context.user_data[f"movie_title_{i}"] = movie['title']
             
@@ -189,11 +195,10 @@ async def button_callback(update: Update, context) -> None:
                 for link in download_links:
                     buttons.append([InlineKeyboardButton(f"📥 {link['label']}", url=link['url'])])
                 
-                # إضافة زر العودة أو البحث الجديد
                 reply_markup = InlineKeyboardMarkup(buttons)
                 await query.edit_message_text(msg, reply_markup=reply_markup, parse_mode='MarkdownV2')
             else:
-                # إذا لم نجد روابط مباشرة، نرسل له رابط صفحة الفيلم مباشرة ليدخل ويشاهد منها
+                # إذا لم نجد روابط مباشرة، نرسل له رابط صفحة الفيلم ليدخل ويشاهد منها
                 msg = (
                     f"✅ *تم العثور على صفحة الفيلم:*\n"
                     f"🎬 `{safe_title}`\n\n"
