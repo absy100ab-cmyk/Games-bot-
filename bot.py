@@ -1,219 +1,373 @@
 import os
-import sys
+import io
+import asyncio
 import logging
-import urllib.parse
-import yt_dlp
-import requests
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters
+from typing import Union
+from PIL import Image, ImageDraw, ImageFont, ImageSequence
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
+from telegram.constants import ParseMode
 
-# ===================== إعداد التسجيل =====================
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
+# إعداد التسجيل
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-# ===================== المتغيرات البيئية =====================
-TOKEN = os.getenv('BOT_TOKEN')
-if not TOKEN:
-    logger.error("❌ لم يتم العثور على BOT_TOKEN!")
-    sys.exit(1)
+# ================ الإعدادات ================
+TOKEN = os.getenv("BOT_TOKEN")
+DEVELOPER = "@B43lB"  # حسابك كمطور
 
-# ===================== دالة البحث وتجاوز الحظر =====================
-def search_movies_yts(query: str) -> list:
-    results = []
-    encoded_query = urllib.parse.quote(query)
-    
-    # استخدام المرايا لتفادي حظر خوادم الاستضافة
-    api_urls = [
-        f"https://yts.mx/api/v2/list_movies.json?query_term={encoded_query}&limit=4",
-        f"https://yts.lt/api/v2/list_movies.json?query_term={encoded_query}&limit=4"
-    ]
-    
-    for url in api_urls:
-        try:
-            response = requests.get(url, timeout=8)
-            if response.status_code == 200:
-                data = response.json()
-                if data.get('status') == 'ok' and data.get('data', {}).get('movie_count', 0) > 0:
-                    movies = data['data']['movies']
-                    for movie in movies:
-                        torrents = []
-                        for t in movie.get('torrents', []):
-                            torrents.append({
-                                'url': t['url'], # رابط التورنت
-                                'hash': t.get('hash'), # الـ Hash الخاص بالتورنت لربطه بمحرك البث
-                                'quality': t.get('quality', '720p'),
-                                'size': t.get('size', 'N/A')
-                            })
-                        
-                        results.append({
-                            'title': movie['title_long'],
-                            'torrents': torrents,
-                            'rating': movie.get('rating', 'N/A')
-                        })
-                    break
-        except Exception as e:
-            logger.error(f"فشل الاتصال بـ {url}: {e}")
-            continue
-
-    return results
-
-# ===================== دالة تحميل دفق الفيديو الفعلي =====================
-def download_yts_video(torrent_hash: str) -> str:
-    """
-    تقوم بتحويل هاش التورنت إلى رابط بث مباشر مدعوم ومستقر تمهيداً لتحميله كملف MP4
-    """
-    out_dir = "downloads"
-    if not os.path.exists(out_dir):
-        os.makedirs(out_dir)
-        
-    # استخدام خادم دفق وسيط ومجاني لتحويل التورنت إلى رابط تحميل مباشر سريع
-    # هذا الرابط يدعمه yt-dlp بشكل كامل وسريع جداً
-    stream_url = f"https://server.webtor.io/api/v1/stream/torrent/{torrent_hash}" 
-    
-    ydl_opts = {
-        'format': 'best[ext=mp4]/best',
-        'outtmpl': f'{out_dir}/%(title)s.%(ext)s',
-        'restrictfilenames': True,
-        'noplaylist': True,
-        'quiet': True,
-        'max_filesize': 1000000000, # حد أقصى 1 جيجابايت لضمان عدم امتلاء ذاكرة ريلواي المؤقتة
-    }
-    
-    try:
-        # نقوم بمحاولة التحميل من رابط البث المباشر المولد من الهاش
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(stream_url, download=True)
-            filename = ydl.prepare_filename(info)
-            return filename
-    except Exception as e:
-        logger.error(f"فشل التحميل عبر محرك البث: {e}")
-        return None
-
-# ===================== معالجات البوت =====================
-async def start(update: Update, context) -> None:
-    welcome_msg = (
-        "🎬 *مرحباً بك في بوت سينما التليجرام العالمية\\!* \n\n"
-        "🍿 أرسل اسم الفيلم باللغة الإنجليزية، وسيقوم البوت بجلب جودات التحميل وإرسال الفيديو لك مباشرة داخل الشات بدون روابط خارجية\\!\n\n"
-        "💡 *مثال:* `Inception` أو `The Dark Knight`\n\n"
-        "👑 *المطور:* @B43lB"
+# ================ أوامر البوت ================
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🎨 *مرحباً بك في بوت صنع الملصقات!*\n\n"
+        "📌 *الأوامر المتاحة:*\n"
+        "/sticker - تحويل صورة إلى ملصق شفاف\n"
+        "/circle - ملصق دائري\n"
+        "/text - إضافة نص على ملصق\n"
+        "/gif - تحويل فيديو إلى GIF\n"
+        "/animate - تحويل صورة إلى GIF متحرك\n"
+        "/dev - معلومات المطور\n\n"
+        "📤 *أرسل صورة* لتجربة الأوامر عليها مباشرة",
+        parse_mode=ParseMode.MARKDOWN
     )
-    await update.message.reply_text(welcome_msg, parse_mode='MarkdownV2')
 
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🔍 *طريقة الاستخدام:*\n\n"
+        "1️⃣ أرسل صورة أو فيديو للبوت\n"
+        "2️⃣ استخدم الأوامر لتحويلها\n\n"
+        "• /sticker مع صورة = ملصق 512x512\n"
+        "• /circle مع صورة = ملصق دائري\n"
+        "• /text <نص> مع صورة = ملصق مكتوب\n"
+        "• /gif مع فيديو = GIF متحرك\n"
+        "• /animate مع صورة = تأثير حركي\n"
+        "/dev - معلومات المطور",
+        parse_mode=ParseMode.MARKDOWN
+    )
 
-async def handle_message(update: Update, context) -> None:
+async def dev_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        f"👨‍💻 *معلومات المطور*\n\n"
+        f"• المطور: {DEVELOPER}\n"
+        f"• البوت مفتوح المصدر\n"
+        f"• للتواصل: {DEVELOPER}\n\n"
+        "⚡ *شكراً لاستخدامك البوت!*",
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+# ================ زخرفة المخرجات بالحقوق ================
+async def add_watermark(image_bytes: bytes, text: str = f"@{DEVELOPER.replace('@', '')}") -> io.BytesIO:
+    """إضافة علامة مائية صغيرة أسفل الصورة"""
+    img = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
+    
+    # إنشاء طبقة للعلامة المائية
+    watermark = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(watermark)
+    
     try:
-        user_query = update.message.text.strip()
-        if not user_query:
-            return
+        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 16)
+    except:
+        font = ImageFont.load_default()
+    
+    # نص العلامة المائية
+    text_bbox = draw.textbbox((0, 0), text, font=font)
+    text_width = text_bbox[2] - text_bbox[0]
+    text_height = text_bbox[3] - text_bbox[1]
+    
+    x = img.width - text_width - 10
+    y = img.height - text_height - 10
+    
+    # خلفية شفافة للنص
+    draw.rectangle(
+        [(x-5, y-2), (x+text_width+5, y+text_height+2)],
+        fill=(0, 0, 0, 120)
+    )
+    draw.text((x, y), text, font=font, fill=(255, 255, 255, 180))
+    
+    # دمج العلامة مع الصورة
+    result = Image.alpha_composite(img, watermark)
+    
+    output = io.BytesIO()
+    result.save(output, format="WEBP")
+    output.seek(0)
+    return output
 
-        processing_msg = await update.message.reply_text("🔍 جاري البحث عن الفيلم في المكتبة وتخطي جدران الحماية المانعة...")
-        
-        search_results = search_movies_yts(user_query)
-        
-        if not search_results:
-            await processing_msg.edit_text("❌ لم أجد نتائج مطابقة لهذا الاسم. يرجى التأكد من كتابة اسم الفيلم الإنجليزي بشكل صحيح.")
-            return
+# ================ معالجة الصور ================
+async def process_sticker(image_bytes: bytes, size: int = 512) -> io.BytesIO:
+    img = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
+    img.thumbnail((size, size), Image.Resampling.LANCZOS)
+    
+    sticker = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    x = (size - img.width) // 2
+    y = (size - img.height) // 2
+    sticker.paste(img, (x, y), img)
+    
+    output = io.BytesIO()
+    sticker.save(output, format="WEBP")
+    output.seek(0)
+    return output
 
-        buttons = []
-        for i, movie in enumerate(search_results):
-            context.user_data[f"movie_{i}"] = movie
-            buttons.append([
-                InlineKeyboardButton(f"🎬 {movie['title']} ⭐ {movie['rating']}", callback_data=f"select_movie:{i}")
-            ])
+async def process_circle_sticker(image_bytes: bytes) -> io.BytesIO:
+    img = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
+    img.thumbnail((512, 512), Image.Resampling.LANCZOS)
+    
+    mask = Image.new("L", (512, 512), 0)
+    draw = ImageDraw.Draw(mask)
+    draw.ellipse((0, 0, 511, 511), fill=255)
+    
+    sticker = Image.new("RGBA", (512, 512), (0, 0, 0, 0))
+    x = (512 - img.width) // 2
+    y = (512 - img.height) // 2
+    sticker.paste(img, (x, y))
+    
+    result = Image.new("RGBA", (512, 512), (0, 0, 0, 0))
+    result.paste(sticker, (0, 0), mask)
+    
+    output = io.BytesIO()
+    result.save(output, format="WEBP")
+    output.seek(0)
+    return output
+
+async def process_text_sticker(image_bytes: bytes, text: str) -> io.BytesIO:
+    img = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
+    img.thumbnail((512, 400), Image.Resampling.LANCZOS)
+    
+    sticker = Image.new("RGBA", (512, 512), (0, 0, 0, 0))
+    x = (512 - img.width) // 2
+    y = 20
+    sticker.paste(img, (x, y), img)
+    
+    draw = ImageDraw.Draw(sticker)
+    try:
+        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 40)
+        small_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 12)
+    except:
+        font = ImageFont.load_default()
+        small_font = ImageFont.load_default()
+    
+    # إضافة النص الرئيسي
+    text_bbox = draw.textbbox((0, 0), text, font=font)
+    text_width = text_bbox[2] - text_bbox[0]
+    text_x = (512 - text_width) // 2
+    text_y = 440
+    
+    draw.rectangle([(text_x-10, text_y-5), (text_x+text_width+10, text_y+45)], fill=(255,255,255,200))
+    draw.text((text_x, text_y), text, font=font, fill=(0,0,0,255))
+    
+    # إضافة حقوق المطور
+    dev_text = f"@{DEVELOPER.replace('@', '')}"
+    dev_bbox = draw.textbbox((0, 0), dev_text, font=small_font)
+    dev_width = dev_bbox[2] - dev_bbox[0]
+    draw.text((512-dev_width-5, 495), dev_text, font=small_font, fill=(255,255,255,150))
+    
+    output = io.BytesIO()
+    sticker.save(output, format="WEBP")
+    output.seek(0)
+    return output
+
+# ================ معالجة GIF ================
+async def process_gif(image_bytes: bytes) -> io.BytesIO:
+    img = Image.open(io.BytesIO(image_bytes))
+    frames = []
+    
+    if getattr(img, "is_animated", False):
+        for frame in ImageSequence.Iterator(img):
+            frame = frame.convert("RGBA")
+            frame.thumbnail((320, 320), Image.Resampling.LANCZOS)
             
-        reply_markup = InlineKeyboardMarkup(buttons)
+            # إضافة حقوق على كل إطار
+            draw = ImageDraw.Draw(frame)
+            try:
+                font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 10)
+            except:
+                font = ImageFont.load_default()
+            dev_text = f"@{DEVELOPER.replace('@', '')}"
+            draw.text((5, frame.height-15), dev_text, font=font, fill=(255,255,255,150))
+            
+            frames.append(frame.copy())
+    else:
+        img = img.convert("RGBA")
+        img.thumbnail((320, 320), Image.Resampling.LANCZOS)
+        frames = [img] * 10
+    
+    output = io.BytesIO()
+    frames[0].save(output, format="GIF", save_all=True, append_images=frames[1:], duration=100, loop=0)
+    output.seek(0)
+    return output
+
+async def process_video_to_gif(video_bytes: bytes) -> io.BytesIO:
+    from moviepy.editor import VideoFileClip
+    import tempfile
+    import os
+    
+    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp_video:
+        tmp_video.write(video_bytes)
+        video_path = tmp_video.name
+    
+    try:
+        clip = VideoFileClip(video_path)
+        if clip.duration > 5:
+            clip = clip.subclip(0, 5)
+        
+        clip = clip.resize(width=320)
+        
+        output = io.BytesIO()
+        clip.write_gif(output, fps=10, program="ffmpeg")
+        output.seek(0)
+        clip.close()
+    finally:
+        os.unlink(video_path)
+    
+    return output
+
+# ================ معالجات الرسائل ================
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    photo = update.message.photo[-1]
+    file = await context.bot.get_file(photo.file_id)
+    image_bytes = await file.download_as_bytearray()
+    context.user_data["last_image"] = image_bytes
+    context.user_data["is_video"] = False
+    
+    await update.message.reply_text(
+        "✅ الصورة محفوظة! استخدم الأوامر:\n"
+        "/sticker | /circle | /text <نص> | /animate",
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    video = update.message.video
+    file = await context.bot.get_file(video.file_id)
+    video_bytes = await file.download_as_bytearray()
+    context.user_data["last_video"] = video_bytes
+    context.user_data["is_video"] = True
+    
+    await update.message.reply_text("✅ الفيديو محفوظ! استخدم /gif لتحويله")
+
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    doc = update.message.document
+    
+    if doc.mime_type.startswith("image/") or doc.mime_type.startswith("video/"):
+        file = await context.bot.get_file(doc.file_id)
+        file_bytes = await file.download_as_bytearray()
+        
+        if doc.mime_type.startswith("image/"):
+            context.user_data["last_image"] = file_bytes
+            context.user_data["is_video"] = False
+            await update.message.reply_text("✅ الصورة محفوظة! استخدم /sticker | /circle | /text")
+        else:
+            context.user_data["last_video"] = file_bytes
+            context.user_data["is_video"] = True
+            await update.message.reply_text("✅ الفيديو محفوظ! استخدم /gif")
+
+# ================ أوامر التحويل ================
+async def sticker_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if "last_image" not in context.user_data:
+        await update.message.reply_text("⚠️ أرسل صورة أولاً!")
+        return
+    
+    processing_msg = await update.message.reply_text("⏳ جاري صنع الملصق...")
+    sticker = await process_sticker(context.user_data["last_image"])
+    await update.message.reply_sticker(sticker=sticker)
+    await processing_msg.delete()
+
+async def circle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if "last_image" not in context.user_data:
+        await update.message.reply_text("⚠️ أرسل صورة أولاً!")
+        return
+    
+    processing_msg = await update.message.reply_text("⏳ جاري صنع الملصق الدائري...")
+    sticker = await process_circle_sticker(context.user_data["last_image"])
+    await update.message.reply_sticker(sticker=sticker)
+    await processing_msg.delete()
+
+async def text_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if "last_image" not in context.user_data:
+        await update.message.reply_text("⚠️ أرسل صورة أولاً!")
+        return
+    
+    text = " ".join(context.args) if context.args else "مرحباً 👋"
+    processing_msg = await update.message.reply_text("⏳ جاري إضافة النص...")
+    sticker = await process_text_sticker(context.user_data["last_image"], text)
+    await update.message.reply_sticker(sticker=sticker)
+    await processing_msg.delete()
+
+async def gif_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if context.user_data.get("is_video"):
+        processing_msg = await update.message.reply_text("⏳ جاري تحويل الفيديو إلى GIF...")
+        try:
+            gif = await process_video_to_gif(context.user_data["last_video"])
+            caption = f"🎬 تم التحويل بواسطة {DEVELOPER}"
+            await update.message.reply_animation(animation=gif, caption=caption)
+        except Exception as e:
+            await update.message.reply_text(f"❌ خطأ: {str(e)}")
+        finally:
+            await processing_msg.delete()
+    elif "last_image" in context.user_data:
+        processing_msg = await update.message.reply_text("⏳ جاري إنشاء GIF...")
+        gif = await process_gif(context.user_data["last_image"])
+        caption = f"🎬 تم الإنشاء بواسطة {DEVELOPER}"
+        await update.message.reply_animation(animation=gif, caption=caption)
         await processing_msg.delete()
+    else:
+        await update.message.reply_text("⚠️ أرسل صورة أو فيديو أولاً!")
+
+async def animate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if "last_image" not in context.user_data:
+        await update.message.reply_text("⚠️ أرسل صورة أولاً!")
+        return
+    
+    processing_msg = await update.message.reply_text("⏳ جاري صنع الحركة...")
+    
+    img = Image.open(io.BytesIO(context.user_data["last_image"])).convert("RGBA")
+    img.thumbnail((320, 320), Image.Resampling.LANCZOS)
+    
+    frames = []
+    for angle in range(0, 360, 36):
+        rotated = img.rotate(angle, expand=False, resample=Image.Resampling.BICUBIC)
         
-        await update.message.reply_text(
-            f"🍿 *نتائج البحث لـ:* `{user_query}`\n\n"
-            f"اختر الفيلم المطلوب لعرض دقات التحميل وإرساله كفيديو مباشر:",
-            reply_markup=reply_markup,
-            parse_mode='MarkdownV2'
-        )
-    except Exception as e:
-        logger.error(f"خطأ في معالجة البحث: {e}")
+        # إضافة حقوق على كل إطار
+        draw = ImageDraw.Draw(rotated)
+        try:
+            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 10)
+        except:
+            font = ImageFont.load_default()
+        dev_text = f"@{DEVELOPER.replace('@', '')}"
+        draw.text((5, rotated.height-15), dev_text, font=font, fill=(255,255,255,150))
+        
+        frames.append(rotated.copy())
+    
+    output = io.BytesIO()
+    frames[0].save(output, format="GIF", save_all=True, append_images=frames[1:], duration=80, loop=0)
+    output.seek(0)
+    
+    caption = f"🔄 تم الإنشاء بواسطة {DEVELOPER}"
+    await update.message.reply_animation(animation=output, caption=caption)
+    await processing_msg.delete()
 
+# ================ التشغيل ================
+def main():
+    if not TOKEN:
+        raise ValueError("❌ لم يتم العثور على BOT_TOKEN في متغيرات البيئة!")
+    
+    app = Application.builder().token(TOKEN).build()
+    
+    # الأوامر
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("dev", dev_command))
+    app.add_handler(CommandHandler("sticker", sticker_command))
+    app.add_handler(CommandHandler("circle", circle_command))
+    app.add_handler(CommandHandler("text", text_command))
+    app.add_handler(CommandHandler("gif", gif_command))
+    app.add_handler(CommandHandler("animate", animate_command))
+    
+    # استقبال الصور والفيديوهات
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    app.add_handler(MessageHandler(filters.VIDEO, handle_video))
+    app.add_handler(MessageHandler(filters.Document.IMAGE | filters.Document.VIDEO, handle_document))
+    
+    logger.info(f"🚀 بدء تشغيل بوت {DEVELOPER}...")
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
 
-async def button_callback(update: Update, context) -> None:
-    try:
-        query = update.callback_query
-        await query.answer()
-
-        data_parts = query.data.split(':')
-        if len(data_parts) < 2:
-            return
-
-        action, index = data_parts[0], int(data_parts[1])
-
-        if action == "select_movie":
-            movie_data = context.user_data.get(f"movie_{index}")
-            if not movie_data:
-                await query.edit_message_text("❌ انتهت صلاحية الجلسة، يرجى إعادة البحث.")
-                return
-            
-            buttons = []
-            for t_idx, torrent in enumerate(movie_data['torrents']):
-                # حفظ الهاش بدلاً من رابط التورنت غير المدعوم
-                context.user_data[f"t_hash_{index}_{t_idx}"] = torrent['hash']
-                buttons.append([
-                    InlineKeyboardButton(
-                        f"📥 إرسال بجودة {torrent['quality']} ({torrent['size']})", 
-                        callback_data=f"send_video:{index}:{t_idx}"
-                    )
-                ])
-                
-            reply_markup = InlineKeyboardMarkup(buttons)
-            await query.edit_message_text(
-                f"⚙️ *اختر الجودة المطلوبة للفيلم:* \n🎬 `{movie_data['title']}`",
-                reply_markup=reply_markup,
-                parse_mode='MarkdownV2'
-            )
-
-        elif action == "send_video":
-            t_idx = int(data_parts[2])
-            movie_data = context.user_data.get(f"movie_{index}")
-            torrent_hash = context.user_data.get(f"t_hash_{index}_{t_idx}")
-
-            if not movie_data or not torrent_hash:
-                await query.edit_message_text("❌ حدث خطأ في استرجاع هاش الفيلم.")
-                return
-
-            await query.edit_message_text("⚡ جاري الاتصال بمحركات البث وسحب الفيلم... يرجى الانتظار قليلاً.")
-            
-            # إرسال الهاش للتحميل
-            video_file_path = download_yts_video(torrent_hash)
-
-            if video_file_path and os.path.exists(video_file_path):
-                await query.edit_message_text("🚀 تم اكتمال تحميل الملف بنجاح! جاري رفعه للشات الآن...")
-                
-                with open(video_file_path, 'rb') as video_file:
-                    await context.bot.send_video(
-                        chat_id=query.message.chat_id,
-                        video=video_file,
-                        caption=f"🎬 *تم تجهيز الفيلم بنجاح:* \n🔥 `{movie_data['title']}`\n\nمشاهدة ممتعة🍿",
-                        parse_mode='MarkdownV2'
-                    )
-                
-                os.remove(video_file_path)
-                await query.message.delete()
-            else:
-                await query.edit_message_text("❌ عذراً، تعذر سحب الفيديو لهذه الجودة حالياً (ربما حجم الملف أكبر من المساحة المؤقتة المتاحة على السيرفر). يرجى محاولة اختيار جودة أقل.")
-
-    except Exception as e:
-        logger.error(f"خطأ في معالجة إرسال الفيديو: {e}")
-        await query.edit_message_text("❌ حدث خطأ غير متوقع أثناء المعالجة.")
-
-
-# ===================== تشغيل البوت =====================
-def main() -> None:
-    application = Application.builder().token(TOKEN).build()
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    application.add_handler(CallbackQueryHandler(button_callback))
-    application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
